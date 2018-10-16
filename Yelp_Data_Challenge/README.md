@@ -59,9 +59,9 @@ Cities:
 	* Classify positive/negative reviews with PCA preprocessing
 	
 ### 4. Build restaurant recommender
-	* Filter active users and create utility matrix (rows as user, columns as business, values as rating stars)
-	* Collaborative filtering (Item-Item similarity recommender)
-	* Matrix Factorization (NMF, UVD/SVD)
+* Filter active users and create utility matrix (rows as user, columns as business, values as rating stars)
+* Collaborative filtering (Item-Item similarity recommender)
+* Matrix Factorization (NMF, UVD/SVD)
 
 	
 	
