@@ -1,0 +1,261 @@
+---
+title: "Question 5"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+Yan Wei
+18.05.05
+
+Build the best logistic regression model to predict loan will be default (delay) or not. Add regularization to control for multicollinearity
+
+###1. Understand data and construct appropriate dataset. 
+
+```{r}
+loan <- read.csv('../../loan.csv', stringsAsFactors = FALSE)
+loanT <- loan
+```
+
+We are most concerned loan status in this task, so first take a look at loan_Status and do some reclassification of this feature.  
+```{r}
+unique(loan$loan_status)
+sort(table(loan$loan_status), decreasing = TRUE)
+```
+
+```{r}
+loan$loan_status <- gsub('Does not meet the credit policy. Status:', '', loan$loan_status)
+```
+
+Since loans marked as 'Current' and 'issued' are currently ongoing, we will remove these obs from our dataset.  
+```{r}
+loan <- loan[-which(loan$loan_status %in% c('Current', 'Issued')), ]
+```
+
+For other loan status, we consider them to have potential risk of being default except loans marked by 'Fully Paid'. Create a new binary variable named loan_status_new, with 'fully paid' marked as '1' and all other marked as '0'. And all obs with loan_status_new as '0' have risk of default.
+```{r}
+loan$loan_status_new <- with(loan, ifelse(loan_status == 'Fully Paid', 1, 0))
+```
+
+Remove original loan_status column. 
+```{r}
+loan$loan_status <- NULL
+```
+
+Calculate percentage of loan_status_new == 1 and loan_status_new == 0. Notice that number of fully paid loans is almost three times as that of potentially default loans. It implies that we can get more than 75% correct prediction simply by predicting all loans with 'Fully Paid'. So before proceeding to do logistic regression model later on, we have to solve imbalance issue.  
+```{r}
+barplot(table(loan$loan_status_new), xlab = 'Loan_status', ylab = 'Count')
+table(loan$loan_status_new)/dim(loan)[1]
+```
+
+To solve data imbalance issue, we downsample fully paid loans by randomly choosing 35% of fully paid loans.
+```{r}
+loan.flpaid <- subset(loan, loan$loan_status_new == 1)
+loan.default <- subset(loan, loan$loan_status_new == 0)
+set.seed(1)
+ind.flpaid <- sample(1:dim(loan.flpaid)[1], 0.35 * dim(loan.flpaid)[1])
+loan.flpaid <- loan.flpaid[ind.flpaid, ]
+loan <- rbind(loan.flpaid, loan.default)
+dim(loan)
+```
+
+
+
+###2. Preprocess features and clean data. 
+Read data dictionary carefully and we decide to drop some features that are either not available when issuing loan or simply not that helpful by intuition. Note that information associated with loan payment features cannot be known until loan is issued. 
+```{r}
+feature.drop <- c('member_id', 'url', 'policy_code', 'zip_code', 'emp_title', 'id', 'desc', 'title', 'installment', 'funded_amnt', 'funded_amnt_inv', 'last_pymnt_amnt', 'last_pymnt_d', 'next_pymnt_d', 'pymnt_plan', 'recoveries', 'total_pymnt', 'total_pymnt_inv', 'total_rec_int', 'total_rec_late_fee', 'total_rec_prncp', 'collection_recovery_fee', 'out_prncp', 'out_prncp_inv')
+```
+
+Create new loan data with above features removed. 
+```{r}
+loan <- loan[, !colnames(loan) %in% feature.drop]
+```
+
+Check missing data percentage of each feature. Drop features with number of missing values more than half of number of total observations. 
+```{r}
+num.NA <- sort(sapply(loan, function(x) {round(sum(is.na(x))/dim(loan)[1], 2)}), decreasing = TRUE)
+print(num.NA[which(num.NA >= 0.50)])
+feature.drop2 <- names(num.NA)[which(num.NA >= 0.50)]
+loan <- loan[, !(colnames(loan) %in% feature.drop2)]
+```
+
+Now look at summary of the data. We reduce to 30 variables (not including loan_status_new).
+```{r}
+str(loan)
+```
+
+Check missing value again, impute missing data with median value. 
+```{r}
+for (col in colnames(loan)) {
+  loan[,col][is.na(loan[,col])] <- median(loan[, col], na.rm = T)
+}
+```
+
+Let's see what numeric features and character features we have.
+```{r}
+num.col <- colnames(loan)[which(sapply(loan, is.numeric))]
+char.col <- colnames(loan)[which(sapply(loan, is.character))]
+```
+
+Then we have a closer look at character feature, specifically, how many unique values there are of each character feature. Notice that there are several character features having too many chategories in them (larger than 50). Then we proceed to adjust number of categories in features 'issue_d'(103 unique values), 'earliest_cr_line'(627 unique values), 'last_credit_pull_d'(101 unique values) and 'addr_state'(51 unique values). 
+```{r}
+sapply(loan[, char.col], function(x) {length(unique(x))})
+```
+
+Deal with 'issue_d'. We only care about year, so generate a new column of 'issue_year'.
+```{r}
+library(zoo)
+loan$issue_d_1 <- as.Date(as.yearmon(loan$issue_d, "%b-%Y"))
+loan$issue_year <- format(loan$issue_d_1, '%Y')
+# remove issue_d, issue_d_1
+loan[, c('issue_d', 'issue_d_1')] <- NULL
+```
+
+Deal with 'earliest_cr_line'. We are more conerned about year.
+```{r}
+loan$earliest_crline_d <- as.Date(as.yearmon(loan$earliest_cr_line, "%b-%Y"))
+loan$earliest_crline_year <- format(loan$earliest_crline_d, '%Y')
+#remove earliest_cr_line, earliest_crline_d
+loan[, c('earliest_cr_line', 'earliest_crline_d')] <- NULL
+```
+
+Deal with 'last_credit_pull_d'. It is the recent month LC pulled credit for this loan. We are more concerned about the month, not the. 
+```{r}
+loan$lastpulld <- as.Date(as.yearmon(loan$last_credit_pull_d, "%b-%Y"))
+loan$last_pull_m <- format(loan$lastpulld, '%b')
+#remove last_credit_pull_d, lastpulld
+loan[, c('last_credit_pull_d', 'lastpulld')] <- NULL
+```
+
+Deal with 'addr_state'. I currently don't have a good idea to explore relationship between addrres state and loan status. So for now I will remove it. 
+```{r}
+table(loan$loan_status_new, loan$addr_state)
+loan$addr_state <- NULL
+```
+
+Deal with home ownership.Combine certain groups. 
+```{r}
+loan$home_ownership <- ifelse(loan$home_ownership %in% c('OTHER','NONE'), 'OTHER', loan$home_ownership)
+```
+
+Since we create some new features, before proceeding to logistic regression, let's check missing values the last time. 
+```{r}
+sort(sapply(loan, function(x) {sum(is.na(x))}), decreasing = TRUE)
+```
+
+Since we only have a very few rows of missing values, this time we simply just remove the rows. 
+```{r}
+loan <- na.omit(loan)
+```
+
+
+###3. Logistic Regression
+
+Now we are prepared to conduct logistic regression analysis. We have 29 features to predict loan status. 
+```{r}
+library(glmnet)
+```
+
+Standardized all numerical features. Note that column #27 is response column, we don't standardize response column. 
+```{r}
+loan_readyforlogit <- loan #In case data get messed up, save a copy.
+which(colnames(loan) == 'loan_status_new') #get column index of 'loan_status_new'
+loan[, c(1,3,8, 11, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26)] <- scale(loan[, c(1,3,8, 11, 12, 13, 14, 15, 16, 17, 18, 20, 23, 24, 25, 26)])
+```
+
+Generate response variable Y(loan_status_new). 
+```{r}
+loanY <- loan[, 'loan_status_new']
+```
+
+Make categorical features to boolean values. 
+```{r}
+loanX <- loan[, -27] #remove loan_status_new
+loanX <- model.matrix( ~., loanX)
+```
+
+Partition data to train and test. Create train indicator. 
+```{r}
+train.ind <- sample(1:dim(loan)[1], 0.7 * dim(loan)[1]) 
+```
+
+
+Use cross validation to find the best lambda using Lasso, Ridge, and Elastic Net as regularization.
+```{r}
+logit_fit.cv.lasso <- cv.glmnet(loanX[train.ind, ], loanY[train.ind], family = 'binomial',alpha = 1,  type.measure = 'class')
+
+logit_fit.cv.ridge <- cv.glmnet(loanX[train.ind, ], loanY[train.ind], family = 'binomial',alpha = 0,  type.measure = 'class')
+
+logit_fit.cv.elasticnet <- cv.glmnet(loanX[train.ind, ], loanY[train.ind], family = 'binomial',alpha = 0.5,  type.measure = 'class')
+```
+
+Plot of lamda vs. error rate for Lasso. 
+```{r}
+plot(logit_fit.cv.lasso, main="LASSO")
+```
+
+Plot of lamda vs. error rate for Ridge. 
+```{r}
+plot(logit_fit.cv.ridge, main="RIDGE")
+```
+
+
+Plot of lamda vs. error rate for Elastic Net with alpha = 0.5. 
+```{r}
+plot(logit_fit.cv.elasticnet, main="Elastic Net")
+```
+
+
+We then make prediction on test data, plot ROC curve, and compute AUC.
+
+For Lasso:
+```{r}
+library(pROC)
+fit <- logit_fit.cv.lasso$glmnet.fit
+pred <- predict.glmnet(fit, loanX[-train.ind, ], s = logit_fit.cv.lasso$lambda.1se)
+plot.roc(loanY[-train.ind], as.vector(pred))
+```
+
+```{r}
+auc(loanY[-train.ind], as.vector(pred))
+```
+
+For Ridge:
+```{r}
+fit <- logit_fit.cv.ridge$glmnet.fit
+pred <- predict.glmnet(fit, loanX[-train.ind, ], s = logit_fit.cv.ridge$lambda.1se)
+plot.roc(loanY[-train.ind], as.vector(pred))
+```
+
+```{r}
+auc(loanY[-train.ind], as.vector(pred))
+```
+
+
+For Elastic Net:
+```{r}
+fit <- logit_fit.cv.elasticnet$glmnet.fit
+pred <- predict.glmnet(fit, loanX[-train.ind, ], s = logit_fit.cv.elasticnet$lambda.1se)
+plot.roc(loanY[-train.ind], as.vector(pred))
+```
+
+```{r}
+auc(loanY[-train.ind], as.vector(pred))
+```
+
+
+###4. Conclusion
+
+For the AUC results using the three regularization on test data, it seems the performance of Elastic Net is slightly better than Lasso and Ridge (AUC is 0.7427 vs. 0.7424 and 0.7418). Note that we only try three alpha levels (0, 0.5, 1) here. An alternative way is to use a 'for loop' to run a sequence of models given a variety of alpha, such as 'for alpha in seq(0, 1, 0.1)'. However it's likely to take forever in my laptop, so I have to end it up here. Among the three logistic regression models, let's have a look at the summary of elasticnet(the one with largest AUC).
+
+```{r}
+summary(logit_fit.cv.elasticnet)
+```
+
+Here is the set of coefficients associated with elasticnet model when lambda equals lambda.1se. Note that lambda.1se is a point where we get an accepted level of both misclassification error and complexity of the model. 
+```{r}
+coef(logit_fit.cv.elasticnet, s = logit_fit.cv.elasticnet$lambda.1se)
+```
+
+
+
